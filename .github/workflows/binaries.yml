@@ -1,20 +1,28 @@
 name: Nightly Binaries
 
 # Prebuilt `claude-commander` + `claude-commander-server` for every commit on
-# main, published as a rolling `nightly` prerelease. Tagged releases still ship
-# source only (publish-tap.yml / publish-aur.yml).
+# main that passes CI, published as a rolling `nightly` prerelease. Tagged
+# releases still ship source only (publish-tap.yml / publish-aur.yml).
+#
+# Triggered by CI *completing* rather than by the push, so a commit that breaks
+# CI is never published. None of CI's own builds can be shipped instead: the Nix
+# build is linked against /nix/store, the rest are debug, and nothing builds
+# aarch64 Linux. A `workflow_run` trigger always uses this file as it is on the
+# default branch, so changes to the trigger take effect only once merged.
 #
 # A pull request that edits this file runs the build matrix (never the publish
-# job), so a change to the workflow is exercised before it reaches main.
+# job), so a change to the build is exercised before it reaches main.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   pull_request:
     paths:
       - .github/workflows/binaries.yml
 
-# A newer main commit supersedes an in-flight nightly: only the latest one is
-# ever published, so there is nothing worth finishing.
+# A newer green main commit supersedes an in-flight nightly: only the latest one
+# is ever published, so there is nothing worth finishing.
 concurrency:
   group: binaries-${{ github.ref }}
   cancel-in-progress: true
@@ -23,10 +31,22 @@ concurrency:
 # baked telemetry credential is compiled into these binaries all the same.
 env:
   DO_NOT_TRACK: "1"
+  # The commit being built. Under `workflow_run`, GITHUB_SHA is the default
+  # branch's tip when the event fired, not the commit CI just passed; under
+  # `pull_request` it is a synthetic merge commit.
+  BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
 
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    # `branches: [main]` above filters on the head branch *name*, which a pull
+    # request from a fork's own `main` also matches, so additionally require a
+    # successful push run in this repository.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -47,6 +67,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_SHA }}
 
       # Plain rustup, not the Nix dev shell the CI jobs use: a binary built
       # against the Nix store carries a /nix/store ELF interpreter and RPATHs,
@@ -71,7 +93,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: binaries-${{ matrix.target }}
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'workflow_run' }}
 
       # The real `[profile.release]` (fat LTO, strip), so a nightly is exactly
       # what a release build would be. Nobody waits on a post-merge run.
@@ -85,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="claude-commander-nightly-${GITHUB_SHA::7}-${{ matrix.target }}"
+          name="claude-commander-nightly-${BUILD_SHA::7}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/claude-commander" \
              "target/${{ matrix.target }}/release/claude-commander-server" \
@@ -117,7 +139,7 @@ jobs:
   nightly:
     name: Publish Nightly
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_run'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -132,15 +154,27 @@ jobs:
       # release and its tag are replaced together, and nothing is force-pushed.
       # `--prerelease` keeps it off "latest", so releases/latest — and with it
       # the Homebrew and AUR flows — still resolve to the last tagged release.
+      #
+      # CI runs for successive commits can finish out of order, and
+      # cancel-in-progress only cancels a run that is still going. So before
+      # replacing anything, skip if the current nightly is already a newer
+      # commit than this one.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          short="${GITHUB_SHA::7}"
+          if current=$(gh api "repos/$GH_REPO/commits/nightly" --jq .sha 2>/dev/null); then
+            status=$(gh api "repos/$GH_REPO/compare/${BUILD_SHA}...${current}" --jq .status)
+            if [ "$status" = "ahead" ]; then
+              echo "nightly is already at ${current}, newer than ${BUILD_SHA}; not replacing it"
+              exit 0
+            fi
+          fi
+          short="${BUILD_SHA::7}"
           cat > notes.md <<EOF
-          Automated build of [\`${short}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) on \`main\`. Not a release — expect rough edges.
+          Automated build of [\`${short}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${BUILD_SHA}) on \`main\`. Not a release — expect rough edges.
 
           Each archive holds \`claude-commander\` (the TUI/CLI) and \`claude-commander-server\` (headless server + web UI).
 
@@ -152,7 +186,7 @@ jobs:
           gh release delete nightly --cleanup-tag --yes || true
           gh release create nightly \
             --prerelease \
-            --target "$GITHUB_SHA" \
+            --target "$BUILD_SHA" \
             --title "Nightly (${short})" \
             --notes-file notes.md \
             dist/*
