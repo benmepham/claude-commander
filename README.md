@@ -51,7 +51,8 @@ untested builds of `main`, not releases.
 - `tmux` and `git` must be on `PATH`.
 - On Linux, `claude-commander` needs the ALSA and PipeWire libraries
   (`libasound.so.2`, `libpipewire-0.3.so.0`), which desktop distros already
-  have. `claude-commander-server` doesn't need them.
+  have. `claude-commander-server` doesn't need them. Both need glibc 2.39 or
+  newer (Ubuntu 24.04, Debian 13, Fedora 40 and later).
 - On macOS the binaries are unsigned: run
   `xattr -d com.apple.quarantine claude-commander claude-commander-server`
   after extracting.

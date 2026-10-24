@@ -32,12 +32,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 22.04 rather than 24.04 for its older glibc (2.35): a binary runs on
-          # any glibc at least as new as the one it was linked against.
+          # 24.04, not the older-glibc 22.04: libspa-sys 0.10 (cpal's PipeWire
+          # backend) binds against PipeWire headers newer than 22.04's 0.3.48,
+          # which lack `spa_video_info_raw.flags`, `spa_meta_first` and
+          # `spa_meta_region_is_valid` — the build fails there (run 40089122857).
+          # So the floor is 24.04's glibc 2.39: a binary runs on any glibc at
+          # least as new as the one it was linked against.
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
           - target: aarch64-apple-darwin
             runner: macos-latest
     steps:
@@ -142,7 +146,7 @@ jobs:
 
           **Runtime requirements**
           - \`tmux\` and \`git\` on \`PATH\`.
-          - Linux: \`claude-commander\` links \`libasound.so.2\` and \`libpipewire-0.3.so.0\` (ALSA and PipeWire, present on desktop distros). \`claude-commander-server\` has no audio dependencies. Built against glibc 2.35.
+          - Linux: \`claude-commander\` links \`libasound.so.2\` and \`libpipewire-0.3.so.0\` (ALSA and PipeWire, present on desktop distros). \`claude-commander-server\` has no audio dependencies. Needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 and later).
           - macOS: the binaries are unsigned; clear the quarantine flag with \`xattr -d com.apple.quarantine claude-commander claude-commander-server\`.
           EOF
           gh release delete nightly --cleanup-tag --yes || true
