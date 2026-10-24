@@ -164,9 +164,10 @@ fn audio_thread(
 }
 
 /// Placeholder [`Player`] compiled when the `audio` feature is off (headless
-/// server, client cdylib). Construction fails rather than silently no-opping, so
-/// voice can't appear to work on a build with no audio backend. These builds
-/// never spawn the voice runtime, so the error path is unreachable in practice.
+/// server, client cdylib, the TUI's `-novoice` binary). Construction fails
+/// rather than silently no-opping, so voice can't appear to work on a build with
+/// no audio backend. The server and cdylib never spawn the voice runtime; the
+/// `-novoice` TUI does, and reports the failure (see [`super::AUDIO_SUPPORTED`]).
 #[cfg(not(feature = "audio"))]
 pub struct Player;
 
