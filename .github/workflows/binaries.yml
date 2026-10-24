@@ -1,0 +1,154 @@
+name: Nightly Binaries
+
+# Prebuilt `claude-commander` + `claude-commander-server` for every commit on
+# main, published as a rolling `nightly` prerelease. Tagged releases still ship
+# source only (publish-tap.yml / publish-aur.yml).
+#
+# A pull request that edits this file runs the build matrix (never the publish
+# job), so a change to the workflow is exercised before it reaches main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/binaries.yml
+
+# A newer main commit supersedes an in-flight nightly: only the latest one is
+# ever published, so there is nothing worth finishing.
+concurrency:
+  group: binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+# Same backstop as ci.yml. Nothing here runs the app beyond `--version`, but the
+# baked telemetry credential is compiled into these binaries all the same.
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 rather than 24.04 for its older glibc (2.35): a binary runs on
+          # any glibc at least as new as the one it was linked against.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Plain rustup, not the Nix dev shell the CI jobs use: a binary built
+      # against the Nix store carries a /nix/store ELF interpreter and RPATHs,
+      # and would not start on an ordinary distro.
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The apt equivalents of flake.nix's package inputs: core's default
+      # `audio` feature links ALSA and libpipewire (cpal/rodio), and the
+      # pipewire-sys/libspa-sys build scripts run bindgen, which needs libclang.
+      # macOS needs nothing — CoreAudio ships in the SDK.
+      - name: Install Linux Build Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev clang
+
+      - name: Restore Cargo Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: binaries-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'push' }}
+
+      # The real `[profile.release]` (fat LTO, strip), so a nightly is exactly
+      # what a release build would be. Nobody waits on a post-merge run.
+      - name: Build
+        run: >-
+          cargo build --locked --release --target ${{ matrix.target }}
+          -p claude-commander -p claude-commander-server
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="claude-commander-nightly-${GITHUB_SHA::7}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/claude-commander" \
+             "target/${{ matrix.target }}/release/claude-commander-server" \
+             README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # `shasum` exists on both runner OSes; sha256sum is not on macOS.
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "dir=dist/$name" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # Runs the packaged copies, so a shared library missing on the runner
+      # fails here at load time rather than on a user's machine.
+      - name: Smoke Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.package.outputs.dir }}/claude-commander" --version
+          "${{ steps.package.outputs.dir }}/claude-commander-server" --version
+
+      - name: Upload Archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  nightly:
+    name: Publish Nightly
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Archives
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Delete and recreate rather than moving the `nightly` tag in place: the
+      # release and its tag are replaced together, and nothing is force-pushed.
+      # `--prerelease` keeps it off "latest", so releases/latest — and with it
+      # the Homebrew and AUR flows — still resolve to the last tagged release.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          cat > notes.md <<EOF
+          Automated build of [\`${short}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) on \`main\`. Not a release — expect rough edges.
+
+          Each archive holds \`claude-commander\` (the TUI/CLI) and \`claude-commander-server\` (headless server + web UI).
+
+          **Runtime requirements**
+          - \`tmux\` and \`git\` on \`PATH\`.
+          - Linux: \`claude-commander\` links \`libasound.so.2\` and \`libpipewire-0.3.so.0\` (ALSA and PipeWire, present on desktop distros). \`claude-commander-server\` has no audio dependencies. Built against glibc 2.35.
+          - macOS: the binaries are unsigned; clear the quarantine flag with \`xattr -d com.apple.quarantine claude-commander claude-commander-server\`.
+          EOF
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Nightly (${short})" \
+            --notes-file notes.md \
+            dist/*
