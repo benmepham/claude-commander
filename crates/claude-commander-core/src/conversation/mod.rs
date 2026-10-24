@@ -32,6 +32,13 @@
 //! commander's UI" and "sub-reply latency" are mutually exclusive (short of
 //! fragile pane-scraping). See [`session`] for the actual protocol handling.
 
+/// Whether this build can open a microphone or speaker: core's `audio` feature.
+/// Off in the server and the client cdylib, and in the TUI's published
+/// `-novoice` binary, where every device open fails with "audio support not
+/// compiled in". Lets a frontend name that cause instead of guessing at a
+/// missing microphone.
+pub const AUDIO_SUPPORTED: bool = cfg!(feature = "audio");
+
 pub mod audio;
 pub mod dictation;
 pub mod extract;

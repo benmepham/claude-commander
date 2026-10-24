@@ -127,6 +127,38 @@ jobs:
           "${{ steps.package.outputs.dir }}/claude-commander" --version
           "${{ steps.package.outputs.dir }}/claude-commander-server" --version
 
+      # The `-novoice` TUI: core without its `audio` feature, so no ALSA or
+      # PipeWire, for hosts that lack them (servers, containers, minimal
+      # installs). Linux only — on macOS CoreAudio is part of the OS. Built
+      # into the same target dir after the archive above has copied its binary
+      # out: only crates whose features change are rebuilt, and the server is
+      # identical either way, so it is reused from the default archive.
+      - name: Build Without Audio
+        if: runner.os == 'Linux'
+        run: >-
+          cargo build --locked --release --target ${{ matrix.target }}
+          -p claude-commander --no-default-features
+
+      - name: Package Without Audio
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.package.outputs.name }}-novoice"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/claude-commander" \
+             "${{ steps.package.outputs.dir }}/claude-commander-server" \
+             README.md LICENSE "dist/$name/"
+          # The point of this archive: fail rather than ship one that still
+          # needs the audio libraries.
+          if readelf -d "dist/$name/claude-commander" | grep -E 'libasound|libpipewire'; then
+            echo "::error::the -novoice binary still links an audio library"
+            exit 1
+          fi
+          "dist/$name/claude-commander" --version
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+
       - name: Upload Archive
         uses: actions/upload-artifact@v7
         with:
@@ -178,9 +210,13 @@ jobs:
 
           Each archive holds \`claude-commander\` (the TUI/CLI) and \`claude-commander-server\` (headless server + web UI).
 
+          **Which Linux archive**
+          - \`…-linux-gnu.tar.gz\`: full build. \`claude-commander\` links \`libasound.so.2\` and \`libpipewire-0.3.so.0\` (ALSA and PipeWire, present on desktop distros) for voice.
+          - \`…-linux-gnu-novoice.tar.gz\`: no voice, and no audio libraries needed. For servers, containers and minimal installs.
+
           **Runtime requirements**
           - \`tmux\` and \`git\` on \`PATH\`.
-          - Linux: \`claude-commander\` links \`libasound.so.2\` and \`libpipewire-0.3.so.0\` (ALSA and PipeWire, present on desktop distros). \`claude-commander-server\` has no audio dependencies. Needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 and later).
+          - Linux: glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 and later). \`claude-commander-server\` is the same in both archives and never needs the audio libraries.
           - macOS: the binaries are unsigned; clear the quarantine flag with \`xattr -d com.apple.quarantine claude-commander claude-commander-server\`.
           EOF
           gh release delete nightly --cleanup-tag --yes || true

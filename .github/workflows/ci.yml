@@ -104,6 +104,12 @@ jobs:
       - name: Run Clippy
         run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 
+      # The `-novoice` Linux binary binaries.yml publishes: core without
+      # `audio`. The workspace pass never builds that combination (the TUI's
+      # default `audio` feature unifies it back on), so it is linted on its own.
+      - name: Run Clippy Without Audio
+        run: nix develop -c cargo clippy -p claude-commander --no-default-features --all-targets -- -D warnings
+
   nix:
     name: Nix Build
     runs-on: ubuntu-latest

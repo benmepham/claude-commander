@@ -16,8 +16,8 @@ use std::time::Instant;
 use super::*;
 use claude_commander_core::agent::AgentKind;
 use claude_commander_core::conversation::{
-    ConversationEvent, ConversationSession, DictationSubmit, ListenAction, ListenerHandle,
-    MediaSignal, SpeakerCommand, SpeakerHandle, SubmitPlan, Transcript, VoiceMode,
+    AUDIO_SUPPORTED, ConversationEvent, ConversationSession, DictationSubmit, ListenAction,
+    ListenerHandle, MediaSignal, SpeakerCommand, SpeakerHandle, SubmitPlan, Transcript, VoiceMode,
     apply_listen_action, media_signal, plan_dictation, spawn_listener, spawn_media_gate,
     spawn_speaker,
 };
@@ -29,6 +29,17 @@ const NOWHERE_TO_DICTATE: &str = "Open a text field or attach to a session to di
 /// The status shown while a dictation records. Spelt as the attach loop's
 /// pane notice spells it (core `tmux/attach.rs`), so both surfaces agree.
 const DICTATING: &str = "● Dictating… (Alt-t to type)";
+
+/// The status shown when the listener could not open a microphone. A build
+/// without core's `audio` feature (the `-novoice` binary) can never open one, so
+/// it says so rather than sending the user looking for a missing device.
+fn voice_unavailable_message(audio_supported: bool) -> &'static str {
+    if audio_supported {
+        "Voice input unavailable — no microphone?"
+    } else {
+        "Voice isn't available in this build (built without audio support)"
+    }
+}
 
 /// Canonical project spinner frames (advanced every 3 render ticks).
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -833,7 +844,7 @@ impl App {
                 self.set_status_message("● Listening… (Alt-V to send)", 60);
             }
             Some(false) => self.set_status_message("● Transcribing…", 4),
-            None => self.set_status_message("Voice input unavailable — no microphone?", 4),
+            None => self.set_status_message(voice_unavailable_message(AUDIO_SUPPORTED), 4),
         }
     }
 
@@ -884,7 +895,7 @@ impl App {
                 self.set_status_message(DICTATING, 60);
             }
             Some(false) => self.set_status_message("● Transcribing…", 4),
-            None => self.set_status_message("Voice input unavailable — no microphone?", 4),
+            None => self.set_status_message(voice_unavailable_message(AUDIO_SUPPORTED), 4),
         }
     }
 
@@ -1206,6 +1217,16 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use claude_commander_core::tmux::PaneInput;
+
+    #[test]
+    fn voice_unavailable_names_a_build_without_audio() {
+        // A `-novoice` build can never open a microphone, so blaming a missing
+        // one would send the user looking for hardware that isn't the problem.
+        let without = voice_unavailable_message(false);
+        assert!(without.contains("this build"), "{without}");
+        assert!(!without.contains("microphone"), "{without}");
+        assert!(voice_unavailable_message(true).contains("microphone"));
+    }
 
     /// An installed injector plus the pump's end of its channel, and an event
     /// channel standing in for the UI loop.
