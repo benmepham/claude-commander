@@ -121,7 +121,14 @@ EOF
 # ---------------------------------------------------------------------------
 
 lane_fmt() { cc_run_in_shell "" cargo "cargo fmt --all -- --check"; }
-lane_clippy() { cc_run_in_shell "" cargo "cargo clippy --workspace --all-targets -- -D warnings"; }
+lane_clippy() {
+  cc_run_in_shell "" cargo "cargo clippy --workspace --all-targets -- -D warnings" || return $?
+  # The `-novoice` binary (binaries.yml): core without `audio`. The workspace
+  # pass above never builds that combination -- the TUI's default `audio`
+  # feature unifies it back on -- so without this it could stop compiling
+  # unnoticed. Mirrors CI's Clippy job.
+  cc_run_in_shell "" cargo "cargo clippy -p claude-commander --no-default-features --all-targets -- -D warnings"
+}
 lane_build() {
   cc_run_in_shell "" cargo "cargo build --workspace --all-targets" || return $?
   # Core's `test-support` must reach the build over dev edges only; see
